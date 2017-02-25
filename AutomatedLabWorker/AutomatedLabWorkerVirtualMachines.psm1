@@ -685,7 +685,7 @@ function Wait-LWHypervVMRestart
             $progressIndicatorStart = (Get-Date)
         }
                 
-        $diskTime += 100-([int](((Get-Counter -counter "\\$(hostname.exe)\PhysicalDisk(*)\% Idle Time" -SampleInterval 1).CounterSamples | Where-Object {$_.InstanceName -like "*$vMdrive`:*"}).CookedValue))
+        #$diskTime += 100-([int](((Get-Counter -counter "\\$(hostname.exe)\PhysicalDisk(*)\% Idle Time" -SampleInterval 1).CounterSamples | Where-Object {$_.InstanceName -like "*$vMdrive`:*"}).CookedValue))
                 
         if ($StartMachinesWhileWaiting)
         {
@@ -696,11 +696,12 @@ function Wait-LWHypervVMRestart
             }
             else
             {
-                Write-Debug -Message "Disk Time: $($diskTime[-1]). Average (20): $([int](($diskTime[(($diskTime).Count-15)..(($diskTime).Count)] | Measure-Object -Average).Average)) - Average (5): $([int](($diskTime[(($diskTime).Count-5)..(($diskTime).Count)] | Measure-Object -Average).Average))"
-                if (((Get-Date) - $lastMachineStart).TotalSeconds -ge 20)
-                {
-                    if (($diskTime[(($diskTime).Count-15)..(($diskTime).Count)] | Measure-Object -Average).Average -lt 50 -and ($diskTime[(($diskTime).Count-5)..(($diskTime).Count)] | Measure-Object -Average).Average -lt 60)
-                    {
+                #Write-Debug -Message "Disk Time: $($diskTime[-1]). Average (20): $([int](($diskTime[(($diskTime).Count-15)..(($diskTime).Count)] | Measure-Object -Average).Average)) - Average (5): $([int](($diskTime[(($diskTime).Count-5)..(($diskTime).Count)] | Measure-Object -Average).Average))"
+                #if (((Get-Date) - $lastMachineStart).TotalSeconds -ge 20)
+                #{
+                    #$perf = ($diskTime[(($diskTime).Count-15)..(($diskTime).Count)] | Measure-Object -Average).Average -lt 50 -and ($diskTime[(($diskTime).Count-5)..(($diskTime).Count)] | Measure-Object -Average).Average
+                    #if ($perf -lt 60)
+                    #{
                         Write-Verbose -Message 'Starting next machine'
                         $lastMachineStart = (Get-Date)
                         Start-LabVM -ComputerName $StartMachinesWhileWaiting[0]
@@ -710,8 +711,12 @@ function Wait-LWHypervVMRestart
                             Start-LabVM -ComputerName $StartMachinesWhileWaiting[0]
                             $StartMachinesWhileWaiting = $StartMachinesWhileWaiting | Where-Object { $_ -ne $StartMachinesWhileWaiting[0] }
                         }
-                    }
-                }
+                    #}
+                    #else
+                    #{
+                    #    'x'
+                    #}
+                #}
             }
         }
         else
