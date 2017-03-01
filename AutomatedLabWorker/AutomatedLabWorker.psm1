@@ -128,7 +128,7 @@ function Invoke-LWCommand
         if ($PSCmdlet.ParameterSetName -eq 'FileContentDependencyRemoteScript')
         {
             $cmd = @"
-                $(if ($ScriptFileName) { "&'$(Join-Path -Path C:\ -ChildPath (Split-Path $DependencyFolderPath -Leaf))\$ScriptFileName'" })
+                $(if ($ScriptFileName) { "&' $(Join-Path -Path C:\ -ChildPath (Split-Path $DependencyFolderPath -Leaf))\$ScriptFileName'" })
                 $(if (-not $KeepFolder) { "Remove-Item '$(Join-Path -Path C:\ -ChildPath (Split-Path $DependencyFolderPath -Leaf))' -Recurse -Force" } )
 "@
             
@@ -137,7 +137,7 @@ function Invoke-LWCommand
             $parameters = @{ }
             $parameters.Add('Session', $internalSession)
             $parameters.Add('ScriptBlock', [scriptblock]::Create($cmd))
-            $parameters.Add('ArgumentList', $arguments)
+            $parameters.Add('ArgumentList', $ArgumentList)
             if ($AsJob)
             {
                 $parameters.Add('AsJob', $AsJob)
@@ -196,10 +196,10 @@ function Invoke-LWCommand
         }
     }
     
-    $parameters.Add('Verbose', $Verbose)
-    $parameters.Add('Debug', $Debug)
+    if ($VerbosePreference -eq 'Continue') { $parameters.Add('Verbose', $VerbosePreference) }
+    if ($DebugPreference -eq 'Continue') { $parameters.Add('Debug', $DebugPreference) }
 
-    $result = New-Object System.Collections.ArrayList
+    [System.Collections.ArrayList]$result = New-Object System.Collections.ArrayList
 
     if (-not $AsJob -and $parameters.ScriptBlock)
     {
@@ -225,7 +225,7 @@ function Invoke-LWCommand
                 $internalSession.Remove($nonAvailableSession)
             }
 
-            $result.AddRange([System.Collections.ArrayList]@(Invoke-Command @parameters -ErrorAction SilentlyContinue -ErrorVariable invokeError))
+            $result.AddRange(@(Invoke-Command @parameters))
 
             #remove all sessions for machines successfully invoked the command
             foreach ($machineFinished in ($result | Where-Object { $_ -like 'LABHOSTNAME*' }))
@@ -233,7 +233,7 @@ function Invoke-LWCommand
                 $machineFinishedName = $machineFinished.Substring($machineFinished.IndexOf(':') + 1)
                 $internalSession.Remove(($internalSession | Where-Object LabMachineName -eq $machineFinishedName))
             }
-            $result = $result | Where-Object { $_ -notlike 'LABHOSTNAME*' }
+            $result = @($result | Where-Object { $_ -notlike 'LABHOSTNAME*' })
 
             $Retries--
 
@@ -263,21 +263,12 @@ function Invoke-LWCommand
         Write-Verbose "The Output of the task on machine '$($ComputerName)' will be available in the variable '$($resultVariable.Name)'"
     }
     
-    if ($invokeError.Count -and -not $AsJob)
-    {
-        foreach ($e in $invokeError)
-        {
-            Write-Error -ErrorRecord $e
-        }
-    }
-    
     Write-Verbose -Message "Finished Installation Activity '$ActivityName'"
     
     Write-LogFunctionExit -ReturnValue $resultVariable
 }
 #endregion Invoke-LWCommand
 
-#region Install-LWSoftwarePackage
 function Install-LWSoftwarePackage
 {
     param (
@@ -317,7 +308,7 @@ function Install-LWSoftwarePackage
 
         $p = New-Object -TypeName System.Diagnostics.Process
         $p.StartInfo = $pInfo
-        Write-Verbose -Message "Starting process $($pInfo.FileName) $($pInfo.Arguments)"
+        Write-Verbose -Message "Starting process: $($pInfo.FileName) $($pInfo.Arguments)"
         $p.Start() | Out-Null
         Write-Verbose "The installation process ID is $($p.Id)"
         $p.WaitForExit()
@@ -351,9 +342,8 @@ function Install-LWSoftwarePackage
     {
         Write-Verbose -Message 'Starting installation of MSI file'
         
-        if (-not $CommandLine)
+        [string]$CommandLine = if (-not $CommandLine)
         {
-            $CommandLine =
             @(
                 "/I `"$Path`"", # Install this MSI
                 '/QN', # Quietly, without a UI
@@ -362,12 +352,14 @@ function Install-LWSoftwarePackage
         }
         else
         {
-            $CommandLine += ' ' + "/I `"$Path`"" # Install this MSI
+            '/I {0} {1}' -f $Path, $CommandLine # Install this MSI
         }
         
         Write-Verbose -Message 'Installation arguments for MSI are:'
         Write-Verbose -Message "`tPath: $Path"
         Write-Verbose -Message "`tLog File: '`t$([System.IO.Path]::GetTempPath())$([System.IO.Path]::GetFileNameWithoutExtension($Path)).log'"
+        
+        $Path = 'msiexec.exe'
     }
     elseif ($installationMethod -eq '.msu')
     {
@@ -618,7 +610,7 @@ function Wait-LWLabJob
     
     Write-LogFunctionEntry
     
-    if ($ProgressIndicator) { Write-ProgressIndicator }
+    if ($ProgressIndicator -and -not $NoDisplay) { Write-ProgressIndicator }
 
     if (-not $Job -and -not $Name)
     {
@@ -649,14 +641,14 @@ function Wait-LWLabJob
             Start-Sleep -Seconds 1
             if (((Get-Date) - $ProgressIndicatorTimer).TotalSeconds -ge $ProgressIndicator)
             {
-                if ($ProgressIndicator) { Write-ProgressIndicator }
+                if ($ProgressIndicator -and -not $NoDisplay) { Write-ProgressIndicator }
                 $ProgressIndicatorTimer = (Get-Date)
             }
         }
         until (($jobs.State -notcontains 'Running' -and $jobs.State -notcontains 'AtBreakPoint') -or ((Get-Date) -gt ($Start.AddMinutes($Timeout))))
     }
     
-    if (-not $NoNewLine -and $ProgressIndicator) { Write-ProgressIndicatorEnd }
+    if (-not $NoNewLine -and $ProgressIndicator -and -not $NoDisplay) { Write-ProgressIndicatorEnd }
     
     if ((Get-Date) -gt ($Start.AddMinutes($Timeout)))
     {

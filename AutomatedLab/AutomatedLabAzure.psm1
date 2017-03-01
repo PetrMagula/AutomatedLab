@@ -58,21 +58,20 @@ function Add-LabAzureSubscription
     
     if (-not $Path)
     {
-        $Path = (Get-ChildItem -Path (Get-LabSourcesLocation) -Filter '*.azurermsettings' -Recurse | Sort-Object -Property TimeWritten | Select-Object -Last 1).FullName
-        
-        Write-ScreenInfo -Message "No ARM profile file specified. Auto-detected and using ARM profile file '$Path'" -Type Warning
+        $tempPath = (Get-ChildItem -Path (Get-LabSourcesLocationInternal -Local) -Filter '*.azurermsettings' -Recurse | Sort-Object -Property TimeWritten | Select-Object -Last 1).FullName
+
+		if($tempPath)
+		{
+			$Path = $tempPath        
+			Write-ScreenInfo -Message "No ARM profile file specified. Auto-detected and using ARM profile file '$Path'" -Type Warning
+		}
     }
     
     if (-not $script:lab)
     {
         throw 'No lab defined. Please call New-LabDefinition first before calling Set-LabDefaultOperatingSystem.'
     }
- 
-    if (-not (Test-Path -Path $Path))
-    {
-        throw "The ARM profile file '$Path' could not be found"
-    }
-    
+
     #This needs to be loaded manually to import the required DLLs
     $minimumAzureModuleVersion = $MyInvocation.MyCommand.Module.PrivateData.MinimumAzureModuleVersion
     if (-not (Get-Module -Name Azure -ListAvailable | Where-Object Version -ge $minimumAzureModuleVersion))
@@ -81,14 +80,38 @@ function Add-LabAzureSubscription
     }
     
     Write-ScreenInfo -Message 'Adding Azure subscription data' -Type Info -TaskStart
+
+	if(-not $Path)
+	{
+		# Try to access Azure RM cmdlets. If credentials are expired, an exception will be raised
+		$null = Get-AzureRmResource -ErrorAction Stop
+        
+        $tempFile = [System.IO.FileInfo][System.IO.Path]::GetTempFileName()
+        $tempFolder = New-Item -ItemType Directory -Path ($tempFile.FullName -replace $tempFile.Extension,'') -Force
+
+		$Path = Join-Path $tempFolder.FullName -ChildPath "$($Lab.Name).azurermprofile"
+
+		Save-AzureRmProfile -Path $Path
+	}
     
     try
     {
+		if(-not (Test-Path $Path))
+		{
+			throw 'No Azure Resource Manager profile could be found'
+		}
+
         $AzureRmProfile = Select-AzureRmProfile -Path $Path -ErrorAction Stop
+
+		$context = Get-AzureRmContext -ErrorAction SilentlyContinue
+		if(-not $context)
+		{
+			throw 'Your Azure Resource Manager profile has expired. Please use Login-AzureRmAccount to log in and optionally Save-AzureRmProfile to persist your settings'
+		}
     }
     catch
     {
-        throw "The Azure Resource Manager Profile $Path could not be loaded or is outdated. $($_.Exception.Message)"
+        throw "The Azure Resource Manager Profile $Path could not be loaded. $($_.Exception.Message)"
     }
 
     Update-LabAzureSettings
@@ -198,9 +221,6 @@ function Add-LabAzureSubscription
         New-LabAzureResourceGroup -ResourceGroupNames (Get-LabDefinition).Name -LocationName $DefaultLocationName
     }
 
-	Write-Verbose -Message 'Creating default availability set'
-	New-LabAzureAvailabilitySet
-
     $storageAccounts = Get-AzureRmStorageAccount -ResourceGroupName $DefaultResourceGroupName -WarningAction SilentlyContinue
     foreach($storageAccount in $storageAccounts)
     {
@@ -262,6 +282,7 @@ function Add-LabAzureSubscription
         }
         Write-ScreenInfo -Message 'Querying available operating system images' -Type Info
         
+        # Server
         $vmImages = Get-AzureRmVMImagePublisher -Location $DefaultLocationName |
         Where-Object PublisherName -eq 'MicrosoftWindowsServer' |
         Get-AzureRmVMImageOffer |
@@ -270,6 +291,7 @@ function Add-LabAzureSubscription
         Group-Object -Property Skus, Offer |
         ForEach-Object { $_.Group | Sort-Object -Property PublishedDate -Descending | Select-Object -First 1 }
 
+        # SQL
         $vmImages += Get-AzureRmVMImagePublisher -Location $DefaultLocationName |
         Where-Object PublisherName -eq 'MicrosoftSQLServer' |
         Get-AzureRmVMImageOffer |
@@ -279,12 +301,23 @@ function Add-LabAzureSubscription
         Group-Object -Property Skus, Offer |
         ForEach-Object { $_.Group | Sort-Object -Property PublishedDate -Descending | Select-Object -First 1 }
         
+        # VisualStudio
         $vmImages += Get-AzureRmVMImagePublisher -Location $DefaultLocationName |
         Where-Object PublisherName -eq 'MicrosoftVisualStudio' |
         Get-AzureRmVMImageOffer |
         Get-AzureRmVMImageSku |
         Get-AzureRmVMImage |
         Where-Object Offer -eq 'VisualStudio' |
+        Group-Object -Property Skus, Offer |
+        ForEach-Object { $_.Group | Sort-Object -Property PublishedDate -Descending | Select-Object -First 1 }
+
+        # Client OS
+        $vmImages += Get-AzureRmVMImagePublisher -Location $DefaultLocationName |
+        Where-Object PublisherName -eq 'MicrosoftVisualStudio' |
+        Get-AzureRmVMImageOffer |
+        Get-AzureRmVMImageSku |
+        Get-AzureRmVMImage |
+        Where-Object Offer -eq 'Windows' |
         Group-Object -Property Skus, Offer |
         ForEach-Object { $_.Group | Sort-Object -Property PublishedDate -Descending | Select-Object -First 1 }
 
@@ -1207,44 +1240,4 @@ function Test-LabAzureSubscription
     {
         throw "No Azure Context found, Please run 'Login-AzureRmAccount' or 'Select-AzureRmProfile ' first"
     }
-}
-
-function New-LabAzureAvailabilitySet
-{
-[CmdletBinding()]
-param
-(
-	[switch]$PassThru
-)
-	if(-not $Script:Lab.AzureSettings.DefaultAvailabilitySet)
-	{
-		$AvailabilitySet = New-AzureRmAvailabilitySet -ResourceGroupName $Script:Lab.Name -Name "lab$($Script:Lab.Name)avset" -Location  (Get-LabAzureDefaultLocation).Location
-		$Script:Lab.AzureSettings.DefaultAvailabilitySet = [AutomatedLab.Azure.AzureAvailabilitySet]::Create($AvailabilitySet)
-	}
-
-	if($PassThru)
-	{
-		$Script:Lab.AzureSettings.DefaultAvailabilitySet
-	}
-}
-
-function Get-LabAzureAvailabilitySet
-{
-[CmdletBinding()]
-param
-(
-)
-
-if(-not $Script:Lab.AzureSettings.DefaultAvailabilitySet)
-{
-	throw 'Get-LabAzureAvailabilitySet should only be called after a lab has been imported or Add-LabAzureSubscription has been called'	
-}
-
-$Script:Lab.AzureSettings.DefaultAvailabilitySet
-}
-
-function Remove-LabAzureAvailabilitySet
-{
-	$Script:Lab.AzureSettings.DefaultAvailabilitySet | Remove-AzureRmAvailabilitySet
-	$Script:Lab.AzureSettings.DefaultAvailabilitySet = $null
 }

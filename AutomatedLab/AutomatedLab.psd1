@@ -1,7 +1,7 @@
 @{
     RootModule = 'AutomatedLab.psm1'
     
-    ModuleVersion = '3.9.2.0'
+    ModuleVersion = '4.0.0.1'
     
     GUID = '6ee6d36f-7914-4bf6-9e3b-c0131669e808'
     
@@ -90,15 +90,8 @@
         'Enter-LabPSSession',
         'Get-LabPSSession',
         'New-LabADSubnet',
-        'Install-LabExchange2013Prerequisites',
-        'Install-LabExchange2013Schema',
-        'Install-LabExchange2013DomainPrep',
-        'Install-LabExchange2013Server',
-        'Install-LabExchange2013Prerequisites',
-        'Install-LabExchange2016Schema',
-        'Install-LabExchange2016DomainPrep',
-        'Install-LabExchange2016Server',
-        'Install-LabExchange2016Prerequisites', 
+        'Install-LabExchange2013',
+        'Install-LabExchange2016',
         'Install-LabSqlServers',
         'Install-LabSqlServers2008',
         'Install-LabSqlServers2012',
@@ -111,7 +104,7 @@
         'Install-LabAdfs',
         'Install-LabAdfsProxy',
         'Set-LabInstallationCredential',
-        'Show-LabInstallationTime',
+        'Show-LabDeploymentSummary',
         'Set-LabGlobalNamePrefix',
         'Wait-LabADReady',
         'Add-LabAzureSubscription',
@@ -249,7 +242,7 @@
         InvokeLabCommandRetries = 3
         InvokeLabCommandRetryIntervalInSeconds = 10
 
-        DoNotUseGetHostEntryInNewLabPSSession = $false
+        DoNotUseGetHostEntryInNewLabPSSession = $true
 
         #General VM settings
         DisableWindowsDefender = $true

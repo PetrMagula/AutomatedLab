@@ -579,13 +579,16 @@ function New-LabDefinition
         '***************************************************************************'
     }
     
-    $Global:scriptStart = Get-Date
+    #settings for a new log
+
+	#reset the log and its format
+    $Global:AL_DeploymentStart = $null
     $Global:taskStart = @()
     $Global:indent = 0
     
     $Global:labDeploymentNoNewLine = $false
 
-    $script:reservedAddressSpaces = $null
+    $Script:reservedAddressSpaces = $null
     
     Write-ScreenInfo -Message 'Initialization' -TimeDelta ([timespan]0) -TimeDelta2 ([timespan]0) -TaskStart
 
@@ -1733,27 +1736,27 @@ function Add-LabMachineDefinition
 
         [switch]$PassThru,
 
-		[string]$FriendlyName
+        [string]$FriendlyName
     )
 DynamicParam {
-		$RuntimeParameterDictionary = New-Object System.Management.Automation.RuntimeDefinedParameterDictionary
+        $RuntimeParameterDictionary = New-Object System.Management.Automation.RuntimeDefinedParameterDictionary
 
         $ParameterName = 'AzureRoleSize'        
         $AttributeCollection = New-Object System.Collections.ObjectModel.Collection[System.Attribute]
         $ParameterAttribute = New-Object System.Management.Automation.ParameterAttribute
         $AttributeCollection.Add($ParameterAttribute)
         $defaultLocation = (Get-LabAzureDefaultLocation -ErrorAction SilentlyContinue).Location
-		if($defaultLocation)
-		{
-			$vmSizes = Get-AzureRMVmSize -Location $defaultLocation -ErrorAction SilentlyContinue | Sort-Object -Property Name
-			$arrSet = $vmSizes | %{"$($_.Name) ($($_.NumberOfCores) Cores, $($_.MemoryInMB) Mb, $($_.MaxDataDiskCount) max data disks)"}
-			$ValidateSetAttribute = New-Object System.Management.Automation.ValidateSetAttribute($arrSet)
-			$AttributeCollection.Add($ValidateSetAttribute)
-		}
+        if($defaultLocation)
+        {
+            $vmSizes = Get-AzureRMVmSize -Location $defaultLocation -ErrorAction SilentlyContinue | Sort-Object -Property Name
+            $arrSet = $vmSizes | %{"$($_.Name) ($($_.NumberOfCores) Cores, $($_.MemoryInMB) Mb, $($_.MaxDataDiskCount) max data disks)"}
+            $ValidateSetAttribute = New-Object System.Management.Automation.ValidateSetAttribute($arrSet)
+            $AttributeCollection.Add($ValidateSetAttribute)
+        }
         $RuntimeParameter = New-Object System.Management.Automation.RuntimeDefinedParameter($ParameterName, [string], $AttributeCollection)
         $RuntimeParameterDictionary.Add($ParameterName, $RuntimeParameter)
 
-		$ParameterName = 'TimeZone'        
+        $ParameterName = 'TimeZone'        
         $AttributeCollection = New-Object System.Collections.ObjectModel.Collection[System.Attribute]
         $ParameterAttribute = New-Object System.Management.Automation.ParameterAttribute
         $AttributeCollection.Add($ParameterAttribute)
@@ -1769,8 +1772,8 @@ DynamicParam {
 begin
 {    
     Write-LogFunctionEntry
-	$AzureRoleSize = $PsBoundParameters['AzureRoleSize']
-	$TimeZone = $PsBoundParameters['TimeZone']
+    $AzureRoleSize = $PsBoundParameters['AzureRoleSize']
+    $TimeZone = $PsBoundParameters['TimeZone']
 }
 
 process
@@ -1800,7 +1803,14 @@ process
     $script:lab = Get-LabDefinition
     if (($script:lab.DefaultVirtualizationEngine -eq 'Azure' -or $VirtualizationHost -eq 'Azure') -and -not $script:lab.AzureSettings)
     {
-        throw "No Azure subscription added yet. Please run 'Add-LabAzureSubscription' first."
+        try
+		{
+			Add-LabAzureSubscription
+		}
+		catch
+		{
+			throw "No Azure subscription added yet. Please run 'Add-LabAzureSubscription' first."
+		}
     }
     
     if ($Global:labExported)
@@ -2081,11 +2091,6 @@ process
         {
             $role.Properties = @{ 'OrganizationName' = 'ExOrg' }
         }
-
-        $exchangeInstallUri = New-Object System.Uri((Get-Module AutomatedLab)[0].PrivateData.Exchange2013DownloadLink)
-        $exchangeInstallFileName = $ExchangeInstallUri.Segments[$ExchangeInstallUri.Segments.Count-1]
-        $ucmaInstallUri = New-Object System.Uri((Get-Module AutomatedLab)[0].PrivateData.ExchangeUcmaDownloadLink)
-        $ucmaInstallFileName = $ucmaInstallUri.Segments[$ucmaInstallUri.Segments.Count-1]
 
         if ($machine.HostType -eq 'HyperV')
         {
@@ -2777,6 +2782,11 @@ function Get-DiskSpeed
     )
 
     Write-LogFunctionEntry
+
+    if (-not $labSources)
+    {
+        $labSources = Get-LabSourcesLocation
+    }
 
     Write-ScreenInfo -Message "Measuring speed of drive $DriveLetter" -Type Info
     

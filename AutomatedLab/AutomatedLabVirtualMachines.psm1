@@ -9,10 +9,10 @@ function New-LabVM
         
         [Parameter(ParameterSetName = 'All')]
         [switch]$All,
-		
+        
         [switch]$CreateCheckPoints,
 
-		[int]$ProgressIndicator = 20
+        [int]$ProgressIndicator = 20
     )
     
     Write-LogFunctionEntry
@@ -26,14 +26,11 @@ function New-LabVM
     
     if ($Name)
     {
-        $machines = $lab.Machines | Where-Object Name -in $Name
+        $machines = Get-LabVM -ComputerName $Name
     }
     else
     {
-        $machines = @()
-        $machines += $lab.Machines | Where-Object { $_.Roles.Name -contains 'RootDC' }
-        $machines += $lab.Machines | Where-Object { $_.OperatingSystem -notlike '*Server*' }
-        $machines += $lab.Machines | Where-Object { $_.Roles.Name -notcontains 'RootDC' -and $_.OperatingSystem -like '*Server*' }
+        $machines = Get-LabVM
     }
     
     if (-not $machines)
@@ -45,14 +42,14 @@ function New-LabVM
     
     $jobs = @()
 
-	if($Lab.DefaultVirtualizationEngine -eq 'Azure')
-	{		
-		Write-ScreenInfo -Message 'Creating Azure load balancer for the newly created machines' -TaskStart
-		New-LWAzureLoadBalancer -ConnectedMachines ($machines.Where({$_.HostType -eq 'Azure'})) -Wait
-		Write-ScreenInfo -Message 'Done' -TaskEnd
-	}
+    if($lab.DefaultVirtualizationEngine -eq 'Azure')
+    {		
+        Write-ScreenInfo -Message 'Creating Azure load balancer for the newly created machines' -TaskStart
+        New-LWAzureLoadBalancer -ConnectedMachines ($machines.Where({ $_.HostType -eq 'Azure' })) -Wait
+        Write-ScreenInfo -Message 'Done' -TaskEnd
+    }
 
-    foreach ($machine in $machines.GetEnumerator())
+    foreach ($machine in $machines)
     {
         Write-ScreenInfo -Message "Creating $($machine.HostType) machine '$machine'" -TaskStart -NoNewLine
         
@@ -60,9 +57,9 @@ function New-LabVM
         {		
             $result = New-LWHypervVM -Machine $machine
             
-            if ('RootDC' -in $Machine.Roles.Name)
+            if ('RootDC' -in $machine.Roles.Name)
             {
-                Start-LabVM -ComputerName $Machine.Name
+                Start-LabVM -ComputerName $machine.Name
             }
             
             if ($result)
@@ -98,11 +95,11 @@ function New-LabVM
     }
     
     #test if the machine creation jobs succeeded
-	Write-ScreenInfo -Message 'Waiting for all machines to finish installing' -TaskStart
+    Write-ScreenInfo -Message 'Waiting for all machines to finish installing' -TaskStart
     $jobs | Wait-Job | Out-Null
     $failedJobs = $jobs | Where-Object State -eq 'Failed'
     $completedJobs = $jobs | Where-Object State -eq 'Completed'
-	Write-ScreenInfo -Message 'Done' -TaskEnd
+    Write-ScreenInfo -Message 'Done' -TaskEnd
 
     if ($failedJobs)
     {
@@ -656,19 +653,16 @@ function Wait-LabVM
         [switch]$NoNewLine
     )
     
-    begin
+    Write-LogFunctionEntry
+        
+    $lab = Get-Lab
+    if (-not $lab)
     {
-        Write-LogFunctionEntry
-        
-        $lab = Get-Lab
-        if (-not $lab)
-        {
-            Write-Error 'No definitions imported, so there is nothing to do. Please use Import-Lab first'
-            return
-        }
-        
-        $jobs = @()
+        Write-Error 'No definitions imported, so there is nothing to do. Please use Import-Lab first'
+        return
     }
+        
+    $jobs = @()
     
     process
     {
@@ -680,104 +674,160 @@ function Wait-LabVM
 		{
 			$vms = Get-LabMachine -ComputerName $ComputerName
 		}
+    
+    
+    if (-not $vms)
+    {
+        Write-Error 'None of the given machines could be found'
+        return
+    }
         
-        foreach ($vm in $vms)
+    foreach ($vm in $vms)
+    {
+        $session = $null
+        #remove the existing sessions to ensure a new one is created and the existing one not reused.
+        Remove-LabPSSession -ComputerName $vm
+            
+        netsh.exe interface ip delete arpcache | Out-Null
+        
+        #if called without using DoNotUseCredSsp and the machine is not yet configured for CredSsp, call Wait-LabVM again but with DoNotUseCredSsp. Wait-LabVM enables CredSsp if called with DoNotUseCredSsp switch.
+        $machineMetadata = Get-LWHypervVMDescription -ComputerName $vm
+        if (($machineMetadata.InitState -band [AutomatedLab.LabVMInitState]::EnabledCredSsp) -ne [AutomatedLab.LabVMInitState]::EnabledCredSsp -and -not $DoNotUseCredSsp)
         {
-            $session = $null
+            Wait-LabVM -ComputerName $vm -TimeoutInMinutes $TimeoutInMinutes -PostDelaySeconds $PostDelaySeconds -ProgressIndicator $ProgressIndicator -DoNotUseCredSsp -NoNewLine:$NoNewLine
+        }
+ 
+        $session = New-LabPSSession -ComputerName $vm -UseLocalCredential -Retries 1 -DoNotUseCredSsp:$DoNotUseCredSsp -ErrorAction SilentlyContinue
             
-            netsh.exe interface ip delete arpcache | Out-Null
-            
-            $session = New-LabPSSession -ComputerName $vm -UseLocalCredential -Retries 1 -DoNotUseCredSsp:$DoNotUseCredSsp -ErrorAction SilentlyContinue
-            
-            if ($session)
-            {
-                Write-Verbose "Computer '$vm' was reachable"
-                $jobs += Start-Job -Name "Waiting for machine '$vm'" -ScriptBlock {
-                    param (
-                        [string]$ComputerName
-                    )
+        if ($session)
+        {
+            Write-Verbose "Computer '$vm' was reachable"
+            $jobs += Start-Job -Name "Waiting for machine '$vm'" -ScriptBlock {
+                param (
+                    [string]$ComputerName
+                )
                         
-                    $ComputerName
-                } -ArgumentList $vm.Name
-            }
-            else
-            {
-                Write-Verbose "Computer '$($vm.ComputerName)' was not reachable, waiting..."
-                $jobs += Start-Job -Name "Waiting for machine '$vm'" -ScriptBlock {
-                    param(
-                        [byte[]]$LabBytes,
+                $ComputerName
+            } -ArgumentList $vm.Name
+        }
+        else
+        {
+            Write-Verbose "Computer '$($vm.ComputerName)' was not reachable, waiting..."
+            $jobs += Start-Job -Name "Waiting for machine '$vm'" -ScriptBlock {
+                param(
+                    [byte[]]$LabBytes,
 
-                        [string]$ComputerName,
+                    [string]$ComputerName,
                         
-                        [bool]$DoNotUseCredSsp
-                    )
+                    [bool]$DoNotUseCredSsp
+                )
 
-                    #$VerbosePreference = 2
-                    Import-Module -Name Azure*
-                    Write-Verbose "Importing Lab from $($LabBytes.Count) bytes"
-                    Import-Lab -LabBytes $LabBytes
+                #$VerbosePreference = 2
+                Import-Module -Name Azure*
+                Write-Verbose "Importing Lab from $($LabBytes.Count) bytes"
+                Import-Lab -LabBytes $LabBytes
 
-                    #do 5000 retries. This job is cancelled anyway if the timeout is reached
-                    Write-Verbose "Trying to create session to '$ComputerName'"
-                    $session = New-LabPSSession -ComputerName $ComputerName -UseLocalCredential  -Retries 5000 -DoNotUseCredSsp:$DoNotUseCredSsp
+                #do 5000 retries. This job is cancelled anyway if the timeout is reached
+                Write-Verbose "Trying to create session to '$ComputerName'"
+                $session = New-LabPSSession -ComputerName $ComputerName -UseLocalCredential  -Retries 5000 -DoNotUseCredSsp:$DoNotUseCredSsp
 
-                    return $ComputerName
-                } -ArgumentList $lab.Export(), $vm.Name, $DoNotUseCredSsp
-            }
+                return $ComputerName
+            } -ArgumentList $lab.Export(), $vm.Name, $DoNotUseCredSsp
         }
     }
-    
-    end
+
+    Write-Verbose "Waiting for $($jobs.Count) machines to respond in timeout ($TimeoutInMinutes minute(s))"
+        
+    Wait-LWLabJob -Job $jobs -ProgressIndicator $ProgressIndicator -NoNewLine:$NoNewLine -NoDisplay
+        
+    $completed = $jobs | Where-Object State -eq Completed | Receive-Job -ErrorAction SilentlyContinue -Verbose:$VerbosePreference
+        
+    if ($completed)
     {
-        Write-Verbose "Waiting for $($jobs.Count) machines to respond in timeout ($TimeoutInMinutes minute(s))"
+        $notReadyMachines = (Compare-Object -ReferenceObject $completed -DifferenceObject $vms.Name).InputObject
+        $jobs | Remove-Job -Force
+    }
+    else
+    {
+        $notReadyMachines = $vms.Name
+    }
         
-        Wait-LWLabJob -Job $jobs -ProgressIndicator $ProgressIndicator -NoNewLine:$NoNewLine -NoDisplay
-        
-        $completed = $jobs | Where-Object State -eq Completed | Receive-Job -ErrorAction SilentlyContinue -Verbose:$VerbosePreference
-        
-        if ($completed)
-        {
-            $notReadyMachines = (Compare-Object -ReferenceObject $completed -DifferenceObject $vms.Name).InputObject
-            $jobs | Remove-Job -Force
-        }
-        else
-        {
-            $notReadyMachines = $vms.Name
-        }
-        
-        if ($notReadyMachines)
-        {
-            $message = "The following machines are not ready: $($notReadyMachines -join ', ')"
-            Write-LogFunctionExitWithError -Message $message
-        }
-        else
-        {
-            Write-Verbose "The following machines are ready: $($completed -join ', ')"
+    if ($notReadyMachines)
+    {
+        $message = "The following machines are not ready: $($notReadyMachines -join ', ')"
+        Write-LogFunctionExitWithError -Message $message
+    }
+    else
+    {
+        Write-Verbose "The following machines are ready: $($completed -join ', ')"
             
-            foreach ($machine in $completed)
+        foreach ($machine in $completed)
+        {
+            if ((Get-LabVM -ComputerName $machine).HostType -eq 'HyperV')
             {
-                if((Get-LabMachine $machine).HostType -eq 'HyperV')
+                $machineMetadata = Get-LWHypervVMDescription -ComputerName $machine
+                if ($machineMetadata.InitState -eq [AutomatedLab.LabVMInitState]::Uninitialized)
                 {
-                    $machineMetadata = Get-LWHypervVMDescription -ComputerName $machine
-                    if ($machineMetadata.InitState -lt 1)
-                    {
-                        $machineMetadata.InitState = 1
-                    }
+                    $machineMetadata.InitState = [AutomatedLab.LabVMInitState]::ReachedByAutomatedLab
                     Set-LWHypervVMDescription -Hashtable $machineMetadata -ComputerName $machine
                 }
-            }            
-            
-            Write-LogFunctionExit
-        }
-        
-        
-        if ($PostDelaySeconds)
-        {
-            $job = Start-Job -Name "Wait $PostDelaySeconds seconds" -ScriptBlock { Start-Sleep -Seconds $Using:PostDelaySeconds }
-            Wait-LWLabJob -Job $job -ProgressIndicator $ProgressIndicator -NoDisplay -NoNewLine:$NoNewLine
-        }
-    }
 
+                if ($DoNotUseCredSsp -and ($machineMetadata.InitState -band [AutomatedLab.LabVMInitState]::EnabledCredSsp) -ne [AutomatedLab.LabVMInitState]::EnabledCredSsp)
+                {
+                    $credSspEnabled = Invoke-LabCommand -ComputerName $machine -ScriptBlock {
+
+                        if ($PSVersionTable.PSVersion.Major -eq 2)
+                        {
+                            $d = "{0:HH:mm}" -f (Get-Date).AddMinutes(1)
+                            $jobName = "AL_EnableCredSsp"
+                            $Path = 'PowerShell'
+                            $CommandLine = '-Command Enable-WSManCredSSP -Role Server -Force; Get-WSManCredSSP | Out-File -FilePath C:\EnableCredSsp.txt'
+                            schtasks.exe /Create /SC ONCE /ST $d /TN $jobName /TR "$Path $CommandLine" | Out-Null
+                            schtasks.exe /Run /TN $jobName | Out-Null
+                            Start-Sleep -Seconds 1
+                            while ((schtasks.exe /Query /TN $jobName) -like '*Running*')
+                            {
+                                Write-Host '.' -NoNewline
+                                Start-Sleep -Seconds 1
+                            }
+                            Start-Sleep -Seconds 1
+                            schtasks.exe /Delete /TN $jobName /F | Out-Null
+
+                            Start-Sleep -Seconds 5
+                                
+                            [bool](Get-Content -Path C:\EnableCredSsp.txt | Where-Object { $_ -eq 'This computer is configured to receive credentials from a remote client computer.' })
+                        }
+                        else
+                        {
+                            Enable-WSManCredSSP -Role Server -Force | Out-Null
+                            [bool](Get-WSManCredSSP | Where-Object { $_ -eq 'This computer is configured to receive credentials from a remote client computer.' })
+                        }
+
+                            
+                    } -PassThru -DoNotUseCredSsp -NoDisplay
+                        
+                    if ($credSspEnabled)
+                    {
+                        $machineMetadata.InitState = $machineMetadata.InitState -bor [AutomatedLab.LabVMInitState]::EnabledCredSsp
+                    }
+                    else
+                    {
+                        Write-ScreenInfo "CredSsp could not be enabled on machine '$machine'" -Type Warning
+                    }
+                    
+                    Set-LWHypervVMDescription -Hashtable $machineMetadata -ComputerName $machine
+                }
+            }
+        }
+            
+        Write-LogFunctionExit
+    }
+    
+    if ($PostDelaySeconds)
+    {
+        $job = Start-Job -Name "Wait $PostDelaySeconds seconds" -ScriptBlock { Start-Sleep -Seconds $Using:PostDelaySeconds }
+        Wait-LWLabJob -Job $job -ProgressIndicator $ProgressIndicator -NoDisplay -NoNewLine:$NoNewLine
+    }
 }
 #endregion Wait-LabVM
 
@@ -788,6 +838,9 @@ function Wait-LabVMRestart
     param (
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'ByName')]
         [string[]]$ComputerName,
+
+        [switch]$DoNotUseCredSsp,
+        
 
 		[Parameter(Mandatory, Position = 0, ParameterSetName = 'ByFriendlyName')]
         [string[]]$FriendlyName,
@@ -827,7 +880,7 @@ function Wait-LabVMRestart
     $vmwareVms = $vms | Where-Object HostType -eq 'VMWare'
     $start = Get-Date
     
-    if ($azureVms)  { Wait-LWAzureRestartVM -ComputerName $azureVms -TimeoutInMinutes $TimeoutInMinutes -ProgressIndicator $ProgressIndicator -NoNewLine:$NoNewLine -ErrorAction SilentlyContinue -ErrorVariable azureWaitError }
+    if ($azureVms)  { Wait-LWAzureRestartVM -ComputerName $azureVms -DoNotUseCredSsp:$DoNotUseCredSsp -TimeoutInMinutes $TimeoutInMinutes -ProgressIndicator $ProgressIndicator -NoNewLine:$NoNewLine -ErrorAction SilentlyContinue -ErrorVariable azureWaitError }
     if ($hypervVms) { Wait-LWHypervVMRestart -ComputerName $hypervVms -TimeoutInMinutes $TimeoutInMinutes -ProgressIndicator $ProgressIndicator -NoNewLine:$NoNewLine -StartMachinesWhileWaiting $StartMachinesWhileWaiting -ErrorAction SilentlyContinue -ErrorVariable hypervWaitError -MonitorJob $MonitorJob}
     if ($vmwareVms) { Wait-LWVMWareRestartVM -ComputerName $vmwareVms -TimeoutInMinutes $TimeoutInMinutes -ProgressIndicator $ProgressIndicator -ErrorAction SilentlyContinue -ErrorVariable vmwareWaitError }
     
